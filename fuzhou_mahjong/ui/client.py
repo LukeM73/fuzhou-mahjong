@@ -23,6 +23,7 @@ Authentic table styling
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -72,46 +73,113 @@ ASSET_DIR = _get_asset_dir()
 
 
 class TileCache:
-    """Loads + caches the per-tile PNGs.  Auto-generates them if missing."""
+    """Loads + caches the per-tile PNGs.  Auto-generates them if missing.
 
-    def __init__(self, scale: float = 0.8):
+    Tiles are kept at their source resolution internally and rescaled on
+    demand to whatever the current window size calls for.  The client calls
+    :meth:`set_tile_width` each frame; if the requested width changes we
+    rebuild the scaled surface cache so hand / small / back tiles stay in
+    lockstep with the window."""
+
+    # Ratio of "small" (discard / meld) tiles to full hand tiles.
+    SMALL_RATIO = 0.62
+
+    def __init__(self, initial_width: int = 72):
         if not (ASSET_DIR / "back.png").exists():
             render_tiles.generate_all(ASSET_DIR)
-        self._images: Dict[str, pygame.Surface] = {}
-        self._small: Dict[str, pygame.Surface] = {}
-        self.scale = scale
+        self._base: Dict[str, pygame.Surface] = {}
         for f in ASSET_DIR.glob("*.png"):
-            img = pygame.image.load(str(f)).convert_alpha()
-            img = pygame.transform.smoothscale(
-                img,
-                (int(img.get_width() * scale), int(img.get_height() * scale)),
-            )
-            self._images[f.stem] = img
-            small = pygame.transform.smoothscale(
-                img,
-                (int(img.get_width() * 0.6), int(img.get_height() * 0.6)),
-            )
-            self._small[f.stem] = small
+            self._base[f.stem] = pygame.image.load(str(f)).convert_alpha()
+        base_back = self._base["back"]
+        self._base_w = base_back.get_width()
+        self._base_h = base_back.get_height()
+        self._scaled: Dict[Tuple[str, int], pygame.Surface] = {}
+        self._tile_w = 0
+        self._tile_h = 0
+        self._small_w = 0
+        self._small_h = 0
+        self._opp_w = 0
+        self._opp_h = 0
+        self.set_sizes(initial_width, max(22, int(initial_width * 0.55)))
+
+    # ------------------------------------------------ sizing
+    def set_sizes(self, main_w: int, opp_w: int) -> bool:
+        """Resize rendered tile widths.
+
+        ``main_w`` controls the local player's concealed hand (and anything
+        derived from it, via :attr:`small_w`).  ``opp_w`` controls the
+        face-down tiles shown for the other three seats; they get a separate
+        scale so 16 rotated backs can fit down the side of the window without
+        overflowing.  Returns True if anything changed."""
+        main_w = max(24, min(int(main_w), self._base_w))
+        opp_w = max(18, min(int(opp_w), main_w))
+        if main_w == self._tile_w and opp_w == self._opp_w:
+            return False
+        self._tile_w = main_w
+        self._tile_h = max(24, int(main_w * self._base_h / self._base_w))
+        self._small_w = max(18, int(main_w * self.SMALL_RATIO))
+        self._small_h = max(18, int(self._small_w * self._base_h / self._base_w))
+        self._opp_w = opp_w
+        self._opp_h = max(18, int(opp_w * self._base_h / self._base_w))
+        # Invalidate the scaled cache — otherwise it would grow unbounded.
+        self._scaled.clear()
+        return True
+
+    # Backwards-compat shim: earlier code called set_tile_width(...) only.
+    def set_tile_width(self, w: int) -> bool:
+        return self.set_sizes(w, max(22, int(w * 0.55)))
+
+    # ------------------------------------------------ rendering
+    def _scaled_img(self, key: str, w: int, h: int) -> pygame.Surface:
+        cache_key = (key, w)
+        surf = self._scaled.get(cache_key)
+        if surf is None:
+            surf = pygame.transform.smoothscale(self._base[key], (w, h))
+            self._scaled[cache_key] = surf
+        return surf
 
     def _key(self, tile: Tile) -> str:
         return tile.to_id().replace(":", "_")
 
     def face(self, tile: Tile) -> pygame.Surface:
-        return self._images[self._key(tile)]
+        return self._scaled_img(self._key(tile), self._tile_w, self._tile_h)
 
     def small(self, tile: Tile) -> pygame.Surface:
-        return self._small[self._key(tile)]
+        return self._scaled_img(self._key(tile), self._small_w, self._small_h)
 
     def back(self) -> pygame.Surface:
-        return self._images["back"]
+        return self._scaled_img("back", self._tile_w, self._tile_h)
+
+    def small_back(self) -> pygame.Surface:
+        return self._scaled_img("back", self._small_w, self._small_h)
+
+    def opp_back(self) -> pygame.Surface:
+        """Back tile sized for the other three seats."""
+        return self._scaled_img("back", self._opp_w, self._opp_h)
 
     @property
     def tile_w(self) -> int:
-        return self.back().get_width()
+        return self._tile_w
 
     @property
     def tile_h(self) -> int:
-        return self.back().get_height()
+        return self._tile_h
+
+    @property
+    def small_w(self) -> int:
+        return self._small_w
+
+    @property
+    def small_h(self) -> int:
+        return self._small_h
+
+    @property
+    def opp_w(self) -> int:
+        return self._opp_w
+
+    @property
+    def opp_h(self) -> int:
+        return self._opp_h
 
 
 # ------------------------------------------------------------- layout helpers
@@ -171,7 +239,8 @@ class Client:
         self.fullscreen = False
         self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
-        self.tiles = TileCache(scale=0.75)
+        self.tiles = TileCache(initial_width=72)
+        self._last_viewport: Tuple[int, int] = (0, 0)
         self.my_seat = my_seat
         self.network = network
         self.font = pygame.font.SysFont("arial", 18)
@@ -205,6 +274,40 @@ class Client:
             self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         else:
             self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
+
+    # ------------------------------------------------ responsive layout
+
+    # Target hand capacity: up to 17 tiles for a dealer + lifted last draw.
+    _HAND_SLOTS = 17
+    _HAND_GAP = 4
+
+    def _update_layout(self) -> None:
+        """Pick tile sizes so the hand + opponent hands all fit on-screen.
+
+        Called every frame (cheap — :class:`TileCache` only rebuilds scaled
+        surfaces when the chosen size actually changes)."""
+        viewport = (self.w, self.h)
+        base_w = self.tiles._base_w
+        base_h = self.tiles._base_h
+
+        # --- Main tile width: fits the local player's concealed hand row.
+        side_margin = 40
+        available_w = max(200, self.w - side_margin * 2)
+        slots = self._HAND_SLOTS
+        per_tile = (available_w - (slots - 1) * self._HAND_GAP) // slots
+        main_w = max(32, min(per_tile, base_w))
+
+        # --- Opponent back width: chosen so 16 tiles fit down the side seats
+        # (rotated 90° — rotated height == back width) and across the top.
+        opp_slots = 17
+        avail_h = max(300, self.h - 220)
+        avail_w_top = max(400, self.w - 320)   # leave room for side columns
+        w_by_side = (avail_h - (opp_slots - 1) * 3) // opp_slots
+        w_by_top = (avail_w_top - (opp_slots - 1) * 3) // opp_slots
+        opp_w = max(22, min(w_by_side, w_by_top, main_w))
+
+        self.tiles.set_sizes(main_w=main_w, opp_w=opp_w)
+        self._last_viewport = viewport
 
     # ------------------------------------------------ running
 
@@ -254,6 +357,10 @@ class Client:
                     pygame.quit(); sys.exit(0)
             if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
                 self._toggle_fullscreen()
+            if event.type == pygame.VIDEORESIZE and not self.fullscreen:
+                self.screen = pygame.display.set_mode(
+                    (max(640, event.w), max(480, event.h)), pygame.RESIZABLE,
+                )
 
             for b in self.buttons:
                 if b.handle(event):
@@ -346,10 +453,21 @@ class Client:
         x0 = (self.w - total_w) // 2
         y = self.h - th - 40
         rects = []
+        # Lift the just-drawn tile wherever it ends up in the sorted order
+        # (only the first duplicate, so an already-present pair doesn't both
+        # float).
+        lifted = False
+        on_my_turn = (
+            self.gs.phase == Phase.WAITING_DISCARD
+            and self.gs.current_seat == self.my_seat
+            and p.hand.last_draw is not None
+        )
         for i, t in enumerate(tiles):
             x = x0 + i * (tw + 4)
-            # Lift last draw a bit
-            dy = -12 if (t == p.hand.last_draw and i == len(tiles) - 1) else 0
+            dy = 0
+            if on_my_turn and not lifted and t == p.hand.last_draw:
+                dy = -12
+                lifted = True
             rect = pygame.Rect(x, y + dy, tw, th)
             if self.selected_tile == t:
                 rect.y -= 14
@@ -359,6 +477,7 @@ class Client:
     # ------------------------------------------------ drawing
 
     def _draw(self) -> None:
+        self._update_layout()
         self._draw_felt()
         self._draw_top_bar()
         self._draw_center_info()
@@ -390,45 +509,59 @@ class Client:
     def _draw_center_info(self) -> None:
         gs = self.gs
         if gs.deck and gs.deck.gold:
-            gold_surf = self.tiles.face(gs.deck.gold)
-            cx = self.w // 2 - gold_surf.get_width() // 2
-            cy = self.h // 2 - gold_surf.get_height() - 20
-            self.screen.blit(gold_surf, (cx, cy))
+            # Render the gold-tile indicator as small so it fits in the gap
+            # between the top and bottom discard quadrants (which now flow
+            # outward from the middle).
+            gold_surf = self.tiles.small(gs.deck.gold)
+            gx = self.w // 2 - gold_surf.get_width() // 2
+            gy = self.h // 2 - gold_surf.get_height() // 2
+            # Subtle plaque behind it so the tile reads on felt green.
+            plaque = pygame.Rect(0, 0, gold_surf.get_width() + 16,
+                                 gold_surf.get_height() + 22)
+            plaque.center = (self.w // 2, self.h // 2)
+            pygame.draw.rect(self.screen, FELT_DARK, plaque, border_radius=6)
+            pygame.draw.rect(self.screen, GOLD, plaque, 1, border_radius=6)
+            self.screen.blit(gold_surf, (gx, gy + 4))
             lbl = self.font_small.render("GOLD", True, GOLD)
-            self.screen.blit(lbl, (cx + gold_surf.get_width() // 2 - lbl.get_width() // 2,
-                                   cy - 18))
+            self.screen.blit(lbl, lbl.get_rect(midtop=(self.w // 2, plaque.top + 2)))
 
     def _draw_seats(self) -> None:
         """Draw the three other players' face-down hands around the table."""
         gs = self.gs
+        back = self.tiles.opp_back()
+        bw = back.get_width()
+        bh = back.get_height()
         for seat in range(4):
             if seat == self.my_seat:
                 continue
             rel = (seat - self.my_seat) % 4   # 1 = right, 2 = across, 3 = left
             p = gs.players[seat]
-            back = self.tiles.back()
             n_tiles = len(p.hand.concealed)
             if rel == 2:  # opposite player (top)
-                total_w = n_tiles * (back.get_width() + 3)
-                x0 = (self.w - total_w) // 2
-                y = 90
+                total_w = n_tiles * (bw + 3) - 3
+                x0 = max(70, (self.w - total_w) // 2)
+                y = 88
                 for i in range(n_tiles):
-                    self.screen.blit(back, (x0 + i * (back.get_width() + 3), y))
-                self._draw_name_plate(seat, self.w // 2, 75, p)
+                    self.screen.blit(back, (x0 + i * (bw + 3), y))
+                self._draw_name_plate(seat, self.w // 2, 72, p)
             elif rel == 1 or rel == 3:
                 rotated = _rotate(back, 90 if rel == 3 else -90)
-                total_h = n_tiles * (rotated.get_height() + 3)
-                y0 = (self.h - total_h) // 2
+                # After rotation: width is the source tile *height*, height is
+                # the source tile *width*.
+                r_w = rotated.get_width()
+                r_h = rotated.get_height()
+                total_h = n_tiles * (r_h + 3) - 3
+                y0 = max(100, (self.h - total_h) // 2)
                 if rel == 1:
-                    x = self.w - rotated.get_width() - 50
-                    name_x = self.w - 90
+                    x = self.w - r_w - 48
+                    name_x = self.w - 80
                 else:
-                    x = 50
-                    name_x = 90
+                    x = 48
+                    name_x = 80
                 for i in range(n_tiles):
-                    self.screen.blit(rotated, (x, y0 + i * (rotated.get_height() + 3)))
+                    self.screen.blit(rotated, (x, y0 + i * (r_h + 3)))
                 self._draw_name_plate(seat, name_x, y0 - 22, p)
-            # melds
+            # melds (anchored relative to each seat's hand column)
             self._draw_exposed_melds(seat, rel)
 
     def _draw_name_plate(self, seat: int, x: int, y: int, p) -> None:
@@ -445,34 +578,52 @@ class Client:
             self.screen.blit(badge, badge.get_rect(center=(x, y + 18)))
 
     def _draw_exposed_melds(self, seat: int, rel: int) -> None:
+        """Render opponent melds as a horizontal strip of small tiles, placed
+        immediately adjacent to that player's face-down hand.  Melds are
+        separated by a small gap so pungs/chows stay visually distinct."""
         p = self.gs.players[seat]
         if not p.hand.melds:
             return
-        x = 100 if rel != 1 else self.w - 220
-        y = 130 + 30 * seat
-        small = self.tiles.small(p.hand.melds[0].tiles[0]) if p.hand.melds else None
-        if small is None:
-            return
-        base_x = x
-        for m in p.hand.melds:
+        sw = self.tiles.small_w
+        sh = self.tiles.small_h
+        gap = 2
+        meld_gap = 8
+        total_w = sum(len(m.tiles) * (sw + gap) - gap for m in p.hand.melds)
+        total_w += meld_gap * (len(p.hand.melds) - 1)
+
+        if rel == 2:  # top — right under their row of face-down tiles
+            x = max(70, (self.w - total_w) // 2)
+            y = 88 + self.tiles.opp_h + 6
+        elif rel == 1:  # right — inset to the left of their column
+            x = self.w - 48 - self.tiles.opp_h - 10 - total_w
+            x = max(self.w // 2 + 40, x)
+            y = self.h // 2 + 110
+        else:  # rel == 3, left
+            x = 48 + self.tiles.opp_h + 10
+            x = min(self.w // 2 - 40 - total_w, x) if total_w else x
+            y = self.h // 2 + 110
+
+        for m_idx, m in enumerate(p.hand.melds):
             for t in m.tiles:
                 surf = self.tiles.small(t)
-                self.screen.blit(surf, (base_x, y))
-                base_x += surf.get_width() + 2
-            base_x += 8
+                self.screen.blit(surf, (x, y))
+                x += sw + gap
+            x += meld_gap - gap
 
     def _draw_my_hand(self) -> None:
         p = self.gs.players[self.my_seat]
+        sw = self.tiles.small_w
+        sh = self.tiles.small_h
         # Flower rack
         if p.hand.flowers:
-            x = 60; y = self.h - self.tiles.tile_h - 160
+            x = 60; y = self.h - self.tiles.tile_h - sh - 96
             for t in p.hand.flowers:
                 surf = self.tiles.small(t)
                 self.screen.blit(surf, (x, y))
                 x += surf.get_width() + 2
         # Exposed melds shown just above the hand
         if p.hand.melds:
-            x = 60; y = self.h - self.tiles.tile_h - 110
+            x = 60; y = self.h - self.tiles.tile_h - sh - 32
             for m in p.hand.melds:
                 for t in m.tiles:
                     surf = self.tiles.small(t)
@@ -480,37 +631,105 @@ class Client:
                     x += surf.get_width() + 2
                 x += 10
         # Concealed hand
+        # Only highlight the freshly-drawn tile while it's still *my* turn to
+        # discard — once I've played it, there's no "last draw" to spotlight.
+        highlight_last_draw = (
+            self.gs.phase == Phase.WAITING_DISCARD
+            and self.gs.current_seat == self.my_seat
+            and p.hand.last_draw is not None
+        )
         for tile, rect in self._layout_my_hand():
             self.screen.blit(self.tiles.face(tile), rect)
-            # highlight the gold
+            # highlight the gold (permanent round-long reminder)
             if self.gs.deck and tile == self.gs.deck.gold:
                 pygame.draw.rect(self.screen, GOLD, rect, 3, border_radius=8)
+            # highlight the tile I just drew this turn
+            if highlight_last_draw and tile == p.hand.last_draw:
+                self._highlight_tile(rect, (120, 220, 255))
+                highlight_last_draw = False   # only the first occurrence
 
     def _draw_discards(self) -> None:
-        """Show each seat's discards stacking outward from the centre."""
-        tile_w = self.tiles.small(Tile.m(1)).get_width()
-        tile_h = self.tiles.small(Tile.m(1)).get_height()
-        cx, cy = self.w // 2, self.h // 2 + 30
-        per_row = 12
+        """Show each seat's discards as a tidy grid in the centre of the
+        table.  The most recently discarded tile (still ``gs.last_discard``,
+        unless it's been called by someone) is outlined in gold so it's easy
+        to spot at a glance."""
+        gs = self.gs
+        sw = self.tiles.small_w
+        sh = self.tiles.small_h
+        gap = 3
+        cx, cy = self.w // 2, self.h // 2
+
+        # How far each quadrant sits from the table centre.  Big enough to
+        # keep tiles clear of the gold-tile indicator (a small tile + label
+        # sitting dead-centre) and the surrounding name plates.
+        pad_x = max(70, sw + 30)
+        pad_y = max(56, sh + 22)
+
+        # Bounded rows/cols per quadrant.  Recomputed from viewport so the
+        # pool shrinks sensibly in smaller windows.
+        avail_top_bot_w = max(220, self.w // 2)
+        avail_side_h = max(160, self.h // 2 - 120)
+        per_row = max(6, min(10, (avail_top_bot_w) // (sw + gap)))
+        per_col = max(4, min(7, (avail_side_h) // (sh + gap)))
+
         for seat in range(4):
             rel = (seat - self.my_seat) % 4
-            tiles = self.gs.discards[seat]
+            tiles = gs.discards[seat]
+            if not tiles:
+                continue
+            last_i = len(tiles) - 1
+            last_is_live = (
+                gs.last_discarder == seat
+                and gs.last_discard is not None
+                and tiles[-1] == gs.last_discard
+            )
             for i, t in enumerate(tiles):
-                row = i // per_row
-                col = i % per_row
-                if rel == 0:   # me (bottom of centre area)
-                    x = cx - (per_row * (tile_w + 2)) // 2 + col * (tile_w + 2)
-                    y = cy + 20 + row * (tile_h + 2)
-                elif rel == 2:  # across (top)
-                    x = cx - (per_row * (tile_w + 2)) // 2 + col * (tile_w + 2)
-                    y = cy - 20 - tile_h - row * (tile_h + 2)
-                elif rel == 1:  # right
-                    x = cx + 90 + row * (tile_w + 2)
-                    y = cy - (per_row * (tile_h + 2)) // 2 + col * (tile_h + 2)
-                else:           # left
-                    x = cx - 90 - tile_w - row * (tile_w + 2)
-                    y = cy - (per_row * (tile_h + 2)) // 2 + col * (tile_h + 2)
-                self.screen.blit(self.tiles.small(t), (x, y))
+                if rel == 0:        # bottom (me)
+                    row = i // per_row
+                    col = i % per_row
+                    x = cx - (per_row * (sw + gap)) // 2 + col * (sw + gap)
+                    y = cy + pad_y + row * (sh + gap)
+                elif rel == 2:      # across (top)
+                    row = i // per_row
+                    col = i % per_row
+                    x = cx - (per_row * (sw + gap)) // 2 + col * (sw + gap)
+                    y = cy - pad_y - sh - row * (sh + gap)
+                elif rel == 1:      # right
+                    row = i // per_col
+                    col = i % per_col
+                    x = cx + pad_x + row * (sw + gap)
+                    y = cy - (per_col * (sh + gap)) // 2 + col * (sh + gap)
+                else:               # left (rel == 3)
+                    row = i // per_col
+                    col = i % per_col
+                    x = cx - pad_x - sw - row * (sw + gap)
+                    y = cy - (per_col * (sh + gap)) // 2 + col * (sh + gap)
+                surf = self.tiles.small(t)
+                rect = surf.get_rect(topleft=(x, y))
+                self.screen.blit(surf, rect)
+                if last_is_live and i == last_i:
+                    self._highlight_tile(rect, GOLD)
+
+    # ------------------------------------------------ highlight helper
+
+    def _highlight_tile(self, rect: pygame.Rect, color: Tuple[int, int, int]) -> None:
+        """Outline a tile to draw the eye to it — used for the most recently
+        discarded / drawn tile.  Drawn as a pulsing soft halo + solid border
+        so it's obvious even on a busy felt."""
+        ticks = pygame.time.get_ticks()
+        # 0..1 sinewave at ~1.2Hz for a gentle pulse.
+        pulse = 0.5 + 0.5 * math.sin(ticks / 160.0)
+        halo = rect.inflate(10, 10)
+        # Soft halo via per-pixel alpha surface so the glow actually reads on
+        # felt green without looking like a harsh box.
+        halo_surf = pygame.Surface(halo.size, pygame.SRCALPHA)
+        alpha = int(60 + 80 * pulse)
+        pygame.draw.rect(
+            halo_surf, (*color, alpha), halo_surf.get_rect(),
+            border_radius=8,
+        )
+        self.screen.blit(halo_surf, halo.topleft)
+        pygame.draw.rect(self.screen, color, rect.inflate(4, 4), 3, border_radius=5)
 
     # ------------------------------------------------ buttons panel
 
