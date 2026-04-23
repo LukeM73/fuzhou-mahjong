@@ -168,7 +168,8 @@ class Client:
     ):
         pygame.init()
         pygame.display.set_caption("Fuzhou Mahjong")
-        self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+        self.fullscreen = False
+        self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
         self.clock = pygame.time.Clock()
         self.tiles = TileCache(scale=0.75)
         self.my_seat = my_seat
@@ -187,6 +188,23 @@ class Client:
         self.selected_tile: Optional[Tile] = None
         self.status_msg = ""
         self.buttons: List[Button] = []
+
+    # ------------------------------------------------ screen size helpers
+
+    @property
+    def w(self) -> int:
+        return self.screen.get_width()
+
+    @property
+    def h(self) -> int:
+        return self.screen.get_height()
+
+    def _toggle_fullscreen(self) -> None:
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.screen = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
 
     # ------------------------------------------------ running
 
@@ -230,7 +248,12 @@ class Client:
             if event.type == pygame.QUIT:
                 pygame.quit(); sys.exit(0)
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                pygame.quit(); sys.exit(0)
+                if self.fullscreen:
+                    self._toggle_fullscreen()
+                else:
+                    pygame.quit(); sys.exit(0)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                self._toggle_fullscreen()
 
             for b in self.buttons:
                 if b.handle(event):
@@ -320,8 +343,8 @@ class Client:
         tw = self.tiles.tile_w
         th = self.tiles.tile_h
         total_w = len(tiles) * (tw + 4) - 4
-        x0 = (WINDOW_W - total_w) // 2
-        y = WINDOW_H - th - 40
+        x0 = (self.w - total_w) // 2
+        y = self.h - th - 40
         rects = []
         for i, t in enumerate(tiles):
             x = x0 + i * (tw + 4)
@@ -350,13 +373,13 @@ class Client:
 
     def _draw_felt(self) -> None:
         self.screen.fill(FELT_DARK)
-        inner = pygame.Rect(30, 30, WINDOW_W - 60, WINDOW_H - 60)
+        inner = pygame.Rect(30, 30, self.w - 60, self.h - 60)
         pygame.draw.rect(self.screen, FELT_GREEN, inner, border_radius=18)
         pygame.draw.rect(self.screen, IVORY_TEXT, inner, 2, border_radius=18)
 
     def _draw_top_bar(self) -> None:
         gs = self.gs
-        bar = pygame.Rect(30, 30, WINDOW_W - 60, 44)
+        bar = pygame.Rect(30, 30, self.w - 60, 44)
         pygame.draw.rect(self.screen, FELT_DARK, bar, border_radius=10)
         label = f"Round {gs.round_number}   Dealer: {gs.players[gs.dealer_seat].name}"
         if gs.deck and gs.deck.gold:
@@ -368,8 +391,8 @@ class Client:
         gs = self.gs
         if gs.deck and gs.deck.gold:
             gold_surf = self.tiles.face(gs.deck.gold)
-            cx = WINDOW_W // 2 - gold_surf.get_width() // 2
-            cy = WINDOW_H // 2 - gold_surf.get_height() - 20
+            cx = self.w // 2 - gold_surf.get_width() // 2
+            cy = self.h // 2 - gold_surf.get_height() - 20
             self.screen.blit(gold_surf, (cx, cy))
             lbl = self.font_small.render("GOLD", True, GOLD)
             self.screen.blit(lbl, (cx + gold_surf.get_width() // 2 - lbl.get_width() // 2,
@@ -387,18 +410,18 @@ class Client:
             n_tiles = len(p.hand.concealed)
             if rel == 2:  # opposite player (top)
                 total_w = n_tiles * (back.get_width() + 3)
-                x0 = (WINDOW_W - total_w) // 2
+                x0 = (self.w - total_w) // 2
                 y = 90
                 for i in range(n_tiles):
                     self.screen.blit(back, (x0 + i * (back.get_width() + 3), y))
-                self._draw_name_plate(seat, WINDOW_W // 2, 75, p)
+                self._draw_name_plate(seat, self.w // 2, 75, p)
             elif rel == 1 or rel == 3:
                 rotated = _rotate(back, 90 if rel == 3 else -90)
                 total_h = n_tiles * (rotated.get_height() + 3)
-                y0 = (WINDOW_H - total_h) // 2
+                y0 = (self.h - total_h) // 2
                 if rel == 1:
-                    x = WINDOW_W - rotated.get_width() - 50
-                    name_x = WINDOW_W - 90
+                    x = self.w - rotated.get_width() - 50
+                    name_x = self.w - 90
                 else:
                     x = 50
                     name_x = 90
@@ -425,7 +448,7 @@ class Client:
         p = self.gs.players[seat]
         if not p.hand.melds:
             return
-        x = 100 if rel != 1 else WINDOW_W - 220
+        x = 100 if rel != 1 else self.w - 220
         y = 130 + 30 * seat
         small = self.tiles.small(p.hand.melds[0].tiles[0]) if p.hand.melds else None
         if small is None:
@@ -442,14 +465,14 @@ class Client:
         p = self.gs.players[self.my_seat]
         # Flower rack
         if p.hand.flowers:
-            x = 60; y = WINDOW_H - self.tiles.tile_h - 160
+            x = 60; y = self.h - self.tiles.tile_h - 160
             for t in p.hand.flowers:
                 surf = self.tiles.small(t)
                 self.screen.blit(surf, (x, y))
                 x += surf.get_width() + 2
         # Exposed melds shown just above the hand
         if p.hand.melds:
-            x = 60; y = WINDOW_H - self.tiles.tile_h - 110
+            x = 60; y = self.h - self.tiles.tile_h - 110
             for m in p.hand.melds:
                 for t in m.tiles:
                     surf = self.tiles.small(t)
@@ -467,7 +490,7 @@ class Client:
         """Show each seat's discards stacking outward from the centre."""
         tile_w = self.tiles.small(Tile.m(1)).get_width()
         tile_h = self.tiles.small(Tile.m(1)).get_height()
-        cx, cy = WINDOW_W // 2, WINDOW_H // 2 + 30
+        cx, cy = self.w // 2, self.h // 2 + 30
         per_row = 12
         for seat in range(4):
             rel = (seat - self.my_seat) % 4
@@ -495,8 +518,8 @@ class Client:
         gs = self.gs
         seat = self.my_seat
         self.buttons = []
-        y = WINDOW_H - 50
-        x = WINDOW_W - 20
+        y = self.h - 50
+        x = self.w - 20
 
         def add(label: str, value: str) -> None:
             nonlocal x
@@ -538,13 +561,13 @@ class Client:
         if not self.status_msg:
             return
         surf = self.font.render(self.status_msg, True, RED)
-        self.screen.blit(surf, (40, WINDOW_H - 30))
+        self.screen.blit(surf, (40, self.h - 30))
 
     def _draw_overlay_if_round_over(self) -> None:
         gs = self.gs
         if gs.phase != Phase.ROUND_OVER:
             return
-        overlay = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+        overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 160))
         self.screen.blit(overlay, (0, 0))
         if gs.winning_player is None:
@@ -552,14 +575,14 @@ class Client:
         else:
             title = f"{gs.players[gs.winning_player].name} wins!"
         t = self.font_big.render(title, True, GOLD)
-        self.screen.blit(t, t.get_rect(center=(WINDOW_W // 2, 220)))
+        self.screen.blit(t, t.get_rect(center=(self.w // 2, 220)))
         if gs.winning_breakdown:
             from ..game.score import format_breakdown
             lines = format_breakdown(gs.winning_breakdown).split("\n")
             y = 270
             for ln in lines:
                 s = self.font.render(ln, True, IVORY_TEXT)
-                self.screen.blit(s, s.get_rect(center=(WINDOW_W // 2, y)))
+                self.screen.blit(s, s.get_rect(center=(self.w // 2, y)))
                 y += 26
 
 

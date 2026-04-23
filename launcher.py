@@ -59,8 +59,17 @@ def _app_dir() -> Path:
 
 
 def _run_module(module: str, *extra_args: str) -> subprocess.Popen:
-    """Spawn a detached subprocess running `python -m <module> [args]`."""
-    cmd = [_python(), "-m", module, *extra_args]
+    """Spawn a detached subprocess running `python -m <module> [args]`.
+
+    When frozen as a PyInstaller .exe, `sys.executable` is the .exe itself and
+    does not support `-m`.  Instead we re-launch the .exe with a special
+    ``--_run_module`` flag that the entry-point block below intercepts.
+    """
+    if getattr(sys, "frozen", False):
+        # Frozen .exe path — re-spawn ourselves with the dispatch flag.
+        cmd = [_python(), "--_run_module", module, *extra_args]
+    else:
+        cmd = [_python(), "-m", module, *extra_args]
     kwargs: dict = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -480,5 +489,16 @@ class Launcher(tk.Tk):
 # ------------------------------------------------------------------ main
 
 if __name__ == "__main__":
-    app = Launcher()
-    app.mainloop()
+    # When re-launched by itself (frozen .exe), dispatch to the requested module
+    # instead of showing the launcher UI.  This replaces `python -m <module>`
+    # which doesn't work inside a PyInstaller bundle.
+    if "--_run_module" in sys.argv:
+        import importlib
+        idx = sys.argv.index("--_run_module")
+        module_name = sys.argv[idx + 1]
+        remaining   = sys.argv[idx + 2:]
+        mod = importlib.import_module(module_name)
+        mod.main(remaining)
+    else:
+        app = Launcher()
+        app.mainloop()

@@ -1124,6 +1124,9 @@
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\\Lib\\uuid.py',
    'PYMODULE'),
+  ('version',
+   'C:\\Users\\lukem\\OneDrive\\Desktop\\Mahjong\\MahjongGame\\version.py',
+   'PYMODULE'),
   ('websockets',
    'C:\\Users\\lukem\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python313\\site-packages\\websockets\\__init__.py',
    'PYMODULE'),

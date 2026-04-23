@@ -4265,6 +4265,9 @@
    'C:\\Program '
    'Files\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\\DLLs\\unicodedata.pyd',
    'EXTENSION'),
+  ('version.py',
+   'C:\\Users\\lukem\\OneDrive\\Desktop\\Mahjong\\MahjongGame\\version.py',
+   'DATA'),
   ('websockets-16.0.dist-info\\INSTALLER',
    'C:\\Users\\lukem\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python313\\site-packages\\websockets-16.0.dist-info\\INSTALLER',
    'DATA'),
