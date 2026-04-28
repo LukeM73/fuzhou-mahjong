@@ -1,8 +1,11 @@
 """
 Generate authentic-looking tile images as PNGs using PIL.
 
-Styling: ivory body with rounded corners, a subtle beveled inset,
-red/black/green CJK characters matching traditional mahjong conventions.
+Traditional mahjong styling:
+- Man tiles: Chinese number characters (one-nine) + Wan in red
+- Pin tiles: Programmatic circle pip patterns (like traditional dots/coins)
+- Sou tiles: Programmatic bamboo stalk patterns
+- Honor/Bonus tiles: Large CJK glyphs
 
 Run this once (or the first time the game starts) to populate ../assets/tiles.
 """
@@ -20,55 +23,82 @@ from ..game.tiles import (
     WIND_GLYPHS, WIND_NAMES,
 )
 
+# palette
+IVORY       = (248, 238, 212)
+IVORY_DARK  = (225, 210, 175)
+IVORY_LIGHT = (255, 252, 238)
+BACK_GREEN  = (22, 98, 58)
 
-# ---------------------------------------------------------------- colours
-IVORY = (248, 238, 212)           # warm off-white tile face
-IVORY_DARK = (225, 210, 175)      # shading on the bevel
-IVORY_LIGHT = (255, 252, 238)     # highlight
-BACK_GREEN = (22, 98, 58)         # tile back / mahjong felt colour
+RED    = (180, 20, 20)
+BLACK  = (28, 22, 22)
+GREEN  = (28, 128, 48)
+BLUE   = (30, 60, 160)
 
-RED = (180, 20, 20)
-BLACK = (28, 22, 22)
-GREEN = (28, 128, 48)
-BLUE = (30, 60, 160)
+PIN_OUTER     = (15, 95, 35)
+PIN_FILL      = (55, 158, 70)
+PIN_RED_OUTER = (140, 15, 15)
+PIN_RED_FILL  = (210, 50, 50)
 
-# ---------------------------------------------------------------- sizing
-TILE_W = 96
-TILE_H = 128
-BEVEL = 6
+BAM_OUTER = (10,  80, 20)
+BAM_FILL  = (45, 140, 55)
+BAM_LIGHT = (90, 195, 85)
+BAM_NODE  = (155, 215, 105)
+
+# sizing
+TILE_W   = 96
+TILE_H   = 128
+BEVEL    = 6
 CORNER_R = 10
 
+_CX = 2 + TILE_W // 2   # 50
+_CY = 2 + TILE_H // 2   # 66
 
-def _font_has_cjk(font: ImageFont.FreeTypeFont) -> bool:
-    """Cheap probe: does this font have glyphs for the tile-face characters?"""
+MAN_CHARS = ["\u4e00", "\u4e8c", "\u4e09", "\u56db", "\u4e94",
+             "\u516d", "\u4e03", "\u516b", "\u4e5d"]
+
+_PIN_PIPS = {
+    1: ([(0,   0)],                                                               24),
+    2: ([(0, -25),  (0,  25)],                                                    17),
+    3: ([(0, -27),  (0,   0),  (0,  27)],                                         14),
+    4: ([(-19, -20), (19, -20), (-19, 20), ( 19,  20)],                           14),
+    5: ([(-20, -22), (20, -22), (  0,  0), (-20,  22), ( 20,  22)],              12),
+    6: ([(-20, -26), (20, -26), (-20,  0), ( 20,   0), (-20,  26), (20, 26)],    12),
+    7: ([(0, -36), (-20, -16), (20, -16), (0, 2), (-20, 20), (20, 20), (0, 38)], 10),
+    8: ([(-20, -36), (20, -36), (-20, -12), (20, -12),
+         (-20,  12), (20,  12), (-20,  36), (20,  36)],                           10),
+    9: ([(-26, -34), (0, -34), (26, -34),
+         (-26,   0), (0,   0), (26,   0),
+         (-26,  34), (0,  34), (26,  34)],                                         9),
+}
+
+_SOU_STALK = {
+    1: (22, 52), 2: (17, 44), 3: (15, 38),
+    4: (14, 32), 5: (13, 28), 6: (12, 26),
+    7: (11, 24), 8: (10, 22), 9: (10, 20),
+}
+
+
+def _font_has_cjk(font):
     try:
-        bbox = font.getbbox("萬")
-        # Missing glyphs in truetype tend to bbox=0 width.
+        bbox = font.getbbox("\u842c")
         return bbox[2] - bbox[0] > 2
     except Exception:
         return False
 
 
-def _find_cjk_font(size: int) -> Tuple[ImageFont.FreeTypeFont, bool]:
-    """Pick any CJK-capable font the system happens to have.
-
-    Returns (font, has_cjk).  When no CJK font is available we still return a
-    Latin font so tiles can be rendered with romanized labels as a fallback.
-    """
+def _find_cjk_font(size):
     cjk_candidates = [
-        # macOS
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/Library/Fonts/Arial Unicode.ttf",
-        # Linux
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf",
         "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        # Windows
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simsun.ttc",
         "C:/Windows/Fonts/simhei.ttf",
@@ -82,7 +112,6 @@ def _find_cjk_font(size: int) -> Tuple[ImageFont.FreeTypeFont, bool]:
             except Exception:
                 continue
 
-    # Fallback: any Latin TTF we can find.
     latin_candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -99,16 +128,11 @@ def _find_cjk_font(size: int) -> Tuple[ImageFont.FreeTypeFont, bool]:
     return ImageFont.load_default(), False
 
 
-def _cjk_font(size: int) -> ImageFont.FreeTypeFont:
-    """Back-compat shim for callers that just want a font."""
+def _cjk_font(size):
     return _find_cjk_font(size)[0]
 
 
-def _tile_base() -> Image.Image:
-    """Blank tile face with rounded corners + gentle beveled edge."""
-    img = Image.new("RGBA", (TILE_W, TILE_H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    # Outer shadow.
+def _tile_base():
     shadow = Image.new("RGBA", (TILE_W + 8, TILE_H + 8), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
     sd.rounded_rectangle(
@@ -120,24 +144,22 @@ def _tile_base() -> Image.Image:
     final = Image.new("RGBA", (TILE_W + 8, TILE_H + 8), (0, 0, 0, 0))
     final.alpha_composite(shadow, (0, 0))
 
-    # Body.
     body = Image.new("RGBA", (TILE_W, TILE_H), (0, 0, 0, 0))
     db = ImageDraw.Draw(body)
     db.rounded_rectangle((0, 0, TILE_W, TILE_H), radius=CORNER_R, fill=IVORY)
-    # Inset bevel.
     db.rounded_rectangle(
         (BEVEL, BEVEL, TILE_W - BEVEL, TILE_H - BEVEL),
         radius=CORNER_R - 2, outline=IVORY_DARK, width=1,
     )
-    # Top highlight
-    db.line([(BEVEL + 2, BEVEL + 1), (TILE_W - BEVEL - 2, BEVEL + 1)],
-            fill=IVORY_LIGHT, width=1)
+    db.line(
+        [(BEVEL + 2, BEVEL + 1), (TILE_W - BEVEL - 2, BEVEL + 1)],
+        fill=IVORY_LIGHT, width=1,
+    )
     final.alpha_composite(body, (2, 2))
     return final
 
 
-def _center_text(img: Image.Image, text: str, font: ImageFont.FreeTypeFont,
-                 fill: Tuple[int, int, int], dy: int = 0) -> None:
+def _center_text(img, text, font, fill, dy=0):
     d = ImageDraw.Draw(img)
     bbox = d.textbbox((0, 0), text, font=font)
     w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -146,32 +168,71 @@ def _center_text(img: Image.Image, text: str, font: ImageFont.FreeTypeFont,
     d.text((x, y), text, font=font, fill=fill)
 
 
-def _render_suit_pips(img: Image.Image, tile: Tile) -> None:
-    """For number suits, draw the number on top and the suit glyph on bottom."""
-    top_color = RED if tile.suit == Suit.MAN and tile.value in (1, 5, 9) else BLACK
-    if tile.suit == Suit.PIN:
-        top_color = BLUE if tile.value == 5 else BLACK
-    if tile.suit == Suit.SOU:
-        # 1-sou traditionally a red bird, 5-sou central red.  We keep it
-        # simple: red on 1 and 5, green otherwise.
-        top_color = RED if tile.value in (1, 5) else GREEN
-
-    font_number, _ = _find_cjk_font(56)
-    font_suit, has_cjk = _find_cjk_font(34)
-
-    # Top: the value as an Arabic or kanji-style number.
-    label = str(tile.value)
-    _center_text(img, label, font_number, top_color, dy=-28)
-
-    # Bottom: suit glyph (romanized fallback if no CJK font).
-    suit_label = SUIT_GLYPH[tile.suit] if has_cjk else {
-        Suit.MAN: "M", Suit.PIN: "P", Suit.SOU: "S",
-    }[tile.suit]
-    _center_text(img, suit_label, font_suit,
-                 BLACK if tile.suit != Suit.MAN else RED, dy=30)
+def _draw_pip_circle(d, cx, cy, r, outer, fill):
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=outer)
+    ir = max(2, r - 3)
+    d.ellipse([cx - ir, cy - ir, cx + ir, cy + ir], fill=fill)
+    hr = max(1, r // 5)
+    hx = cx - ir // 3
+    hy = cy - ir // 3
+    d.ellipse([hx - hr, hy - hr, hx + hr, hy + hr], fill=(230, 248, 225))
 
 
-def _render_honor(img: Image.Image, tile: Tile) -> None:
+def _draw_bamboo_stalk(d, cx, cy, w, h, red_cap=False):
+    x0, y0 = cx - w // 2, cy - h // 2
+    x1, y1 = cx + w // 2, cy + h // 2
+    r = max(3, w // 3)
+    d.rounded_rectangle([x0, y0, x1, y1], radius=r, fill=BAM_FILL)
+    d.rounded_rectangle([x0, y0, x1, y1], radius=r, outline=BAM_OUTER, width=1)
+    sw = max(2, w // 3)
+    d.rounded_rectangle([x0 + 2, y0 + 3, x0 + sw + 1, y1 - 3],
+                        radius=r // 2, fill=BAM_LIGHT)
+    n1 = y0 + h // 3
+    n2 = y0 + 2 * h // 3
+    d.line([(x0 + 1, n1), (x1 - 1, n1)], fill=BAM_NODE, width=1)
+    d.line([(x0 + 1, n2), (x1 - 1, n2)], fill=BAM_NODE, width=1)
+    if red_cap:
+        cr = max(4, w // 2)
+        cap_y = cy - h // 2
+        d.ellipse([cx - cr, cap_y - cr, cx + cr, cap_y + cr],
+                  fill=(195, 35, 35))
+
+
+def _render_man(img, tile):
+    font_big, has_cjk = _find_cjk_font(52)
+    font_small, _ = _find_cjk_font(28)
+    if has_cjk:
+        numeral = MAN_CHARS[tile.value - 1]
+        _center_text(img, numeral, font_big, RED, dy=-20)
+        _center_text(img, "\u842c", font_small, RED, dy=28)
+    else:
+        font_num, _ = _find_cjk_font(58)
+        _center_text(img, str(tile.value), font_num, RED, dy=-22)
+        _center_text(img, "Wan", font_small, RED, dy=30)
+
+
+def _render_pin(img, tile):
+    d = ImageDraw.Draw(img)
+    positions, radius = _PIN_PIPS[tile.value]
+    for i, (dx, dy) in enumerate(positions):
+        cx, cy = _CX + dx, _CY + dy
+        if tile.value == 1 or (tile.value == 5 and i == 2):
+            outer, fill = PIN_RED_OUTER, PIN_RED_FILL
+        else:
+            outer, fill = PIN_OUTER, PIN_FILL
+        _draw_pip_circle(d, cx, cy, radius, outer, fill)
+
+
+def _render_sou(img, tile):
+    d = ImageDraw.Draw(img)
+    positions, _ = _PIN_PIPS[tile.value]
+    sw, sh = _SOU_STALK[tile.value]
+    for i, (dx, dy) in enumerate(positions):
+        cx, cy = _CX + dx, _CY + dy
+        _draw_bamboo_stalk(d, cx, cy, sw, sh, red_cap=(tile.value == 1 and i == 0))
+
+
+def _render_honor(img, tile):
     font_big, has_cjk = _find_cjk_font(68)
     font_small, _ = _find_cjk_font(30)
     if tile.suit == Suit.WIND:
@@ -198,30 +259,32 @@ def _render_honor(img: Image.Image, tile: Tile) -> None:
     _center_text(img, glyph, font_big, color, dy=0)
 
 
-def render_tile(tile: Tile) -> Image.Image:
+def render_tile(tile):
     img = _tile_base()
-    if tile.is_numbered:
-        _render_suit_pips(img, tile)
+    if tile.suit == Suit.MAN:
+        _render_man(img, tile)
+    elif tile.suit == Suit.PIN:
+        _render_pin(img, tile)
+    elif tile.suit == Suit.SOU:
+        _render_sou(img, tile)
     else:
         _render_honor(img, tile)
     return img
 
 
-def render_tile_back() -> Image.Image:
-    """Face-down tile (what other players' hidden tiles look like)."""
-    img = Image.new("RGBA", (TILE_W + 8, TILE_H + 8), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+def render_tile_back():
     shadow = Image.new("RGBA", (TILE_W + 8, TILE_H + 8), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
-    sd.rounded_rectangle((4, 4, TILE_W + 4, TILE_H + 4), radius=CORNER_R,
-                         fill=(0, 0, 0, 110))
+    sd.rounded_rectangle((4, 4, TILE_W + 4, TILE_H + 4),
+                          radius=CORNER_R, fill=(0, 0, 0, 110))
     shadow = shadow.filter(ImageFilter.GaussianBlur(3))
+
+    img = Image.new("RGBA", (TILE_W + 8, TILE_H + 8), (0, 0, 0, 0))
     img.alpha_composite(shadow, (0, 0))
 
     body = Image.new("RGBA", (TILE_W, TILE_H), (0, 0, 0, 0))
     db = ImageDraw.Draw(body)
     db.rounded_rectangle((0, 0, TILE_W, TILE_H), radius=CORNER_R, fill=BACK_GREEN)
-    # Decorative inset diamond pattern.
     for y in range(12, TILE_H - 12, 20):
         for x in range(12, TILE_W - 12, 20):
             db.polygon(
@@ -232,12 +295,8 @@ def render_tile_back() -> Image.Image:
     return img
 
 
-# ---------------------------------------------------------------- batch
-
-
-def generate_all(out_dir: Path) -> None:
+def generate_all(out_dir):
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Unique tile identities (one image per distinct face).
     seen = set()
     for t in ALL_TILES:
         key = (t.suit, t.value)
@@ -245,9 +304,9 @@ def generate_all(out_dir: Path) -> None:
             continue
         seen.add(key)
         img = render_tile(t)
-        img.save(out_dir / f"{t.to_id().replace(':', '_')}.png")
+        img.save(out_dir / "{}.png".format(t.to_id().replace(":", "_")))
     render_tile_back().save(out_dir / "back.png")
-    print(f"wrote {len(seen) + 1} tile images to {out_dir}")
+    print("wrote {} tile images to {}".format(len(seen) + 1, out_dir))
 
 
 if __name__ == "__main__":

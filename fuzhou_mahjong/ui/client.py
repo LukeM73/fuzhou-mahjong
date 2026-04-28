@@ -54,6 +54,40 @@ BTN_HOVER = (120, 90, 60)
 
 FPS = 60
 
+# ── Man-tile legend ────────────────────────────────────────────────────────
+# Each row: (CJK character shown on tile, English reading)
+MAN_LEGEND = [
+    ("一", "1  —  One"),
+    ("二", "2  —  Two"),
+    ("三", "3  —  Three"),
+    ("四", "4  —  Four"),
+    ("五", "5  —  Five"),
+    ("六", "6  —  Six"),
+    ("七", "7  —  Seven"),
+    ("八", "8  —  Eight"),
+    ("九", "9  —  Nine"),
+    ("萬", "Wan  (suit name)"),
+]
+
+
+def _find_pygame_cjk_font(size: int) -> Optional[pygame.font.Font]:
+    """Return a pygame Font that can render CJK characters, or None."""
+    candidates = [
+        "C:/Windows/Fonts/msyh.ttc",      # Microsoft YaHei (Win)
+        "C:/Windows/Fonts/simsun.ttc",     # SimSun (Win)
+        "C:/Windows/Fonts/simhei.ttf",     # SimHei (Win)
+        "/System/Library/Fonts/PingFang.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                return pygame.font.Font(p, size)
+            except Exception:
+                continue
+    return None
+
 
 def _get_asset_dir() -> Path:
     """Return the tiles asset directory, works both normally and inside a
@@ -246,6 +280,9 @@ class Client:
         self.font = pygame.font.SysFont("arial", 18)
         self.font_big = pygame.font.SysFont("arial", 28, bold=True)
         self.font_small = pygame.font.SysFont("arial", 14)
+        # CJK font for the Man-tile legend (None if unavailable on this system)
+        self.font_cjk = _find_pygame_cjk_font(16)
+        self.show_legend = True   # toggle with L key
 
         self.gs = gs or GameState.new_game(
             ["You", "Player 2", "Player 3", "Player 4"], seed=seed,
@@ -357,6 +394,8 @@ class Client:
                     pygame.quit(); sys.exit(0)
             if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
                 self._toggle_fullscreen()
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_l:
+                self.show_legend = not self.show_legend
             if event.type == pygame.VIDEORESIZE and not self.fullscreen:
                 self.screen = pygame.display.set_mode(
                     (max(640, event.w), max(480, event.h)), pygame.RESIZABLE,
@@ -409,6 +448,11 @@ class Client:
                 self._apply_action(Action(
                     ActionType.KONG_CONCEALED, seat=seat, tile=kongs[0],
                 ))
+        elif b.value == "play_again":
+            self._reset_game()
+        elif b.value == "quit":
+            pygame.quit()
+            sys.exit(0)
 
     def _try_discard(self, tile: Tile) -> None:
         gs = self.gs
@@ -432,6 +476,13 @@ class Client:
                 self._apply_action(Action(
                     ActionType.DECLARE_WIN, seat=self.my_seat, tile=gs.last_discard,
                 ))
+
+    def _reset_game(self) -> None:
+        """Start a fresh game with the same player names."""
+        names = [p.name for p in self.gs.players]
+        self.gs = GameState.new_game(names)
+        self.selected_tile = None
+        self.status_msg = ""
 
     def _apply_action(self, action: Action) -> None:
         if self.network is not None:
@@ -484,11 +535,12 @@ class Client:
         self._draw_seats()
         self._draw_my_hand()
         self._draw_discards()
+        self._draw_overlay_if_round_over()
         self._refresh_buttons()
         for b in self.buttons:
             b.draw(self.screen, self.font)
+        self._draw_man_legend()
         self._draw_status()
-        self._draw_overlay_if_round_over()
 
     def _draw_felt(self) -> None:
         self.screen.fill(FELT_DARK)
@@ -773,6 +825,60 @@ class Client:
                 gs.last_discard, gs.gold,
             ).is_win:
                 add("Mahjong!", "win")
+        elif phase == Phase.ROUND_OVER:
+            bw, bh = 140, 40
+            gap = 20
+            total_w = bw * 2 + gap
+            x0 = (self.w - total_w) // 2
+            by = self.h // 2 + 200
+            self.buttons.append(Button(pygame.Rect(x0, by, bw, bh), "Play Again", "play_again"))
+            self.buttons.append(Button(pygame.Rect(x0 + bw + gap, by, bw, bh), "Quit", "quit"))
+
+    # ------------------------------------------------ man-tile legend
+
+    def _draw_man_legend(self) -> None:
+        """Small panel in the bottom-right corner explaining Man tile characters."""
+        if not self.show_legend:
+            return
+
+        row_h    = 20
+        padding  = 8
+        char_col = 22   # width reserved for the CJK glyph column
+        panel_w  = 200
+        title_h  = 22
+        panel_h  = title_h + len(MAN_LEGEND) * row_h + padding * 2
+        hint_h   = 16
+
+        # Anchor to bottom-right of the felt area (inside the border).
+        px = self.w - panel_w - 40
+        py = self.h - panel_h - hint_h - 50
+
+        # Semi-transparent background
+        panel_surf = pygame.Surface((panel_w, panel_h + hint_h), pygame.SRCALPHA)
+        panel_surf.fill((8, 32, 18, 210))
+        pygame.draw.rect(panel_surf, IVORY_TEXT,
+                         panel_surf.get_rect(), 1, border_radius=6)
+        self.screen.blit(panel_surf, (px, py))
+
+        # Title row
+        title = self.font.render("Man Tiles  (Characters)", True, GOLD)
+        self.screen.blit(title, (px + padding, py + padding))
+
+        y = py + padding + title_h
+        for cjk_char, english in MAN_LEGEND:
+            # CJK character (red for numerals, ivory for 萬)
+            if self.font_cjk is not None:
+                color = RED if cjk_char != "萬" else IVORY_TEXT
+                char_surf = self.font_cjk.render(cjk_char, True, color)
+                self.screen.blit(char_surf, (px + padding, y))
+            # English label
+            eng_surf = self.font_small.render(english, True, IVORY_TEXT)
+            self.screen.blit(eng_surf, (px + padding + char_col, y + 3))
+            y += row_h
+
+        # Dismiss hint
+        hint = self.font_small.render("  [L] show/hide", True, (120, 140, 120))
+        self.screen.blit(hint, (px + padding, py + panel_h + 1))
 
     # ------------------------------------------------ status + overlay
 
@@ -834,6 +940,103 @@ def main(argv: Optional[List[str]] = None) -> None:
     client = Client(
         my_seat=0,
         local_ais=[1, 2, 3],
+        gs=gs,
+    )
+    client.run()
+
+
+if __name__ == "__main__":
+    main()
+EXT,
+                         panel_surf.get_rect(), 1, border_radius=6)
+        self.screen.blit(panel_surf, (px, py))
+
+        # Title row
+        title = self.font.render("Man Tiles  (Characters)", True, GOLD)
+        self.screen.blit(title, (px + padding, py + padding))
+
+        y = py + padding + title_h
+        for cjk_char, english in MAN_LEGEND:
+            # CJK character (red for numerals, ivory for Wan)
+            if self.font_cjk is not None:
+                color = RED if cjk_char != "\u842c" else IVORY_TEXT
+                char_surf = self.font_cjk.render(cjk_char, True, color)
+                self.screen.blit(char_surf, (px + padding, y))
+            # English label
+            eng_surf = self.font_small.render(english, True, IVORY_TEXT)
+            self.screen.blit(eng_surf, (px + padding + char_col, y + 3))
+            y += row_h
+
+        # Dismiss hint
+        hint = self.font_small.render("  [L] show/hide", True, (120, 140, 120))
+        self.screen.blit(hint, (px + padding, py + panel_h + 1))
+
+    # ------------------------------------------------ status + overlay
+
+    def _draw_status(self) -> None:
+        if not self.status_msg:
+            return
+        surf = self.font.render(self.status_msg, True, RED)
+        self.screen.blit(surf, (40, self.h - 30))
+
+    def _draw_overlay_if_round_over(self) -> None:
+        gs = self.gs
+        if gs.phase != Phase.ROUND_OVER:
+            return
+        overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        self.screen.blit(overlay, (0, 0))
+        if gs.winning_player is None:
+            title = "Draw game -- no winner"
+        else:
+            title = f"{gs.players[gs.winning_player].name} wins!"
+        t = self.font_big.render(title, True, GOLD)
+        self.screen.blit(t, t.get_rect(center=(self.w // 2, 220)))
+        if gs.winning_breakdown:
+            from ..game.score import format_breakdown
+            lines = format_breakdown(gs.winning_breakdown).split("\n")
+            y = 270
+            for ln in lines:
+                s = self.font.render(ln, True, IVORY_TEXT)
+                self.screen.blit(s, s.get_rect(center=(self.w // 2, y)))
+                y += 26
+
+
+# ------------------------------------------------------------- entry point
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="fuzhou_mahjong")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="deterministic deck seed")
+    parser.add_argument("--solo", action="store_true",
+                        help="play against 3 AI bots locally")
+    parser.add_argument("--host", type=str,
+                        help="remote server host:port for online play")
+    parser.add_argument("--room", type=str, default="",
+                        help="room code to join")
+    parser.add_argument("--name", type=str, default="You",
+                        help="your display name")
+    args = parser.parse_args(argv)
+
+    if args.host:
+        from ..net.client import NetworkClient
+        nc = NetworkClient(args.host, args.room, args.name)
+        nc.run_with_pygame()
+        return
+
+    gs = GameState.new_game([args.name, "AI-East", "AI-North", "AI-West"],
+                             seed=args.seed)
+    client = Client(
+        my_seat=0,
+        local_ais=[1, 2, 3],
+        gs=gs,
+    )
+    client.run()
+
+
+if __name__ == "__main__":
+    main()
         gs=gs,
     )
     client.run()
