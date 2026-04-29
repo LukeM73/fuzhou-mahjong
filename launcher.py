@@ -11,22 +11,19 @@ Auto-updater
 ------------
 On startup a background thread queries the GitHub Releases API.  If a newer
 version is available an update banner appears in the launcher.  Clicking
-"Update Now" downloads the zip, extracts it to a temp folder, writes a small
-batch script that swaps the files after the app exits, then closes the app.
+"Download Update" opens the GitHub Releases page in the user's browser —
+no files are written or executed by the launcher itself.
 """
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import tkinter as tk
 import urllib.request
-import zipfile
+import webbrowser
 from pathlib import Path
 from tkinter import messagebox
 from typing import Optional
@@ -90,12 +87,20 @@ class Updater:
     """
     Runs entirely in background threads.  Calls back onto the Tk main thread
     via `root.after(0, …)` so it is thread-safe.
+
+    Update strategy: we check GitHub for a newer release tag and, if found,
+    show a banner.  Clicking "Download Update" opens the releases page in the
+    user's default browser — no files are downloaded or executed by the app.
+    This keeps the launcher's behaviour simple and avoids antivirus false-positives
+    that are triggered by patterns like: download zip → write .bat → run cmd /c.
     """
 
     def __init__(self, root: tk.Tk, on_update_available):
         self._root = root
         self._on_available = on_update_available
-        self._download_url: Optional[str] = None
+        self._releases_page = (
+            f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+        )
         self._latest_tag: str = ""
 
     # ── public ──────────────────────────────────────────────────────────
@@ -104,11 +109,9 @@ class Updater:
         """Start the background version-check.  Returns immediately."""
         threading.Thread(target=self._check, daemon=True).start()
 
-    def download_and_install(self, progress_cb=None):
-        """Download the release zip and schedule the swap on exit."""
-        threading.Thread(
-            target=self._download, args=(progress_cb,), daemon=True
-        ).start()
+    def open_releases_page(self):
+        """Open the GitHub releases page in the user's default browser."""
+        webbrowser.open(self._releases_page)
 
     # ── internals ───────────────────────────────────────────────────────
 
@@ -123,92 +126,10 @@ class Updater:
 
             tag = data.get("tag_name", "")
             if _parse_version(tag) > _parse_version(__version__):
-                # Find the zip asset URL
-                for asset in data.get("assets", []):
-                    if asset["name"] == RELEASE_ASSET_NAME:
-                        self._download_url = asset["browser_download_url"]
-                        break
                 self._latest_tag = tag
                 self._root.after(0, lambda: self._on_available(tag))
         except Exception:
             pass  # silently ignore network errors on startup
-
-    def _download(self, progress_cb=None):
-        if not self._download_url:
-            return
-
-        tmp_dir   = Path(tempfile.mkdtemp(prefix="fzm_update_"))
-        zip_path  = tmp_dir / RELEASE_ASSET_NAME
-        extract   = tmp_dir / "extracted"
-
-        try:
-            # ── download ────────────────────────────────────────────────
-            req = urllib.request.Request(
-                self._download_url,
-                headers={"User-Agent": f"FuzhouMahjong/{__version__}"},
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                total = int(resp.headers.get("Content-Length", 0))
-                downloaded = 0
-                chunk = 65536
-                with open(zip_path, "wb") as fh:
-                    while True:
-                        buf = resp.read(chunk)
-                        if not buf:
-                            break
-                        fh.write(buf)
-                        downloaded += len(buf)
-                        if progress_cb and total:
-                            progress_cb(downloaded / total)
-
-            # ── extract ─────────────────────────────────────────────────
-            extract.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract)
-
-            # The zip contains a single top-level folder: FuzhouMahjong/
-            new_app = extract / "FuzhouMahjong"
-            if not new_app.exists():
-                # Fallback: treat extracted root as the new app
-                new_app = extract
-
-            # ── write the swap script ────────────────────────────────────
-            install_dir = str(_app_dir())
-            bat_path    = tmp_dir / "_apply_update.bat"
-            exe_path    = str(_app_dir() / "FuzhouMahjong.exe")
-
-            bat_content = f"""@echo off
-REM Fuzhou Mahjong auto-update swap script — generated automatically
-timeout /t 2 /nobreak >nul
-robocopy "{new_app}" "{install_dir}" /E /IS /IT /NFL /NDL /NJH /NJS >nul
-start "" "{exe_path}"
-rd /s /q "{tmp_dir}"
-del "%~f0"
-"""
-            bat_path.write_text(bat_content, encoding="utf-8")
-
-            # ── launch swap script and exit ──────────────────────────────
-            subprocess.Popen(
-                ["cmd", "/c", str(bat_path)],
-                creationflags=subprocess.CREATE_NO_WINDOW
-                | subprocess.DETACHED_PROCESS,
-                close_fds=True,
-            )
-
-            self._root.after(0, self._root.destroy)
-
-        except Exception as exc:
-            self._root.after(
-                0,
-                lambda: messagebox.showerror(
-                    "Update failed",
-                    f"Could not complete the update:\n{exc}\n\n"
-                    "You can download it manually from:\n"
-                    f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases",
-                ),
-            )
-            # Clean up on failure
-            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ------------------------------------------------------------------ UI
@@ -236,7 +157,6 @@ class Launcher(tk.Tk):
         self.resizable(False, False)
         self._server_proc: Optional[subprocess.Popen] = None
         self._update_frame: Optional[tk.Frame] = None
-        self._progress_var = tk.DoubleVar(value=0)
         self._build_ui()
         self._center()
 
@@ -365,11 +285,9 @@ class Launcher(tk.Tk):
             bg=UPDATE_BG,
         ).pack(side="left", padx=(16, 8))
 
-        self._prog_bar_frame = tk.Frame(frame, bg=UPDATE_BG)
-
         update_btn = tk.Button(
             frame,
-            text="Update Now",
+            text="Download Update",
             font=("Segoe UI", 10, "bold"),
             fg=BTN_FG,
             bg=ACCENT,
@@ -378,30 +296,11 @@ class Launcher(tk.Tk):
             cursor="hand2",
             padx=12,
             pady=4,
-            command=lambda: self._start_update(update_btn),
+            command=self._updater.open_releases_page,
         )
         update_btn.pack(side="right", padx=(8, 16))
 
         self._update_frame = frame
-
-    def _start_update(self, btn: tk.Button):
-        btn.config(state="disabled", text="Downloading…")
-        self._status("Downloading update…")
-
-        # Show a simple progress bar
-        bar_bg = tk.Frame(self._update_frame, bg="#0e3c26",
-                          width=200, height=6)
-        bar_bg.pack(side="left", padx=8)
-        bar_bg.pack_propagate(False)
-        self._bar_fill = tk.Frame(bar_bg, bg=ACCENT, width=0, height=6)
-        self._bar_fill.place(x=0, y=0, relheight=1, width=0)
-
-        def progress(frac: float):
-            self.after(0, lambda f=frac: self._bar_fill.place(
-                x=0, y=0, relheight=1, width=int(200 * f)
-            ))
-
-        self._updater.download_and_install(progress_cb=progress)
 
     # ---------------------------------------------------------------- entry helpers
 

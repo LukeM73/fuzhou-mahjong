@@ -44,9 +44,31 @@ echo  [3/3] Done!
 echo.
 echo  Your app is in:  dist\FuzhouMahjong\
 echo.
+echo  ============================================================
+echo   Windows Defender / Antivirus note
+echo  ============================================================
+echo   PyInstaller .exe files are sometimes flagged as suspicious
+echo   by antivirus software even though they are safe.  If Windows
+echo   Defender quarantines or blocks FuzhouMahjong.exe:
+echo.
+echo   Option A -- Add a Defender exclusion for the build folder:
+echo     1. Open Windows Security
+echo     2. Virus ^& threat protection ^> Manage settings
+echo     3. Exclusions ^> Add or remove exclusions
+echo     4. Add Folder: %CD%\dist\FuzhouMahjong
+echo.
+echo   Option B -- Restore the quarantined file:
+echo     1. Open Windows Security
+echo     2. Virus ^& threat protection ^> Protection history
+echo     3. Find the FuzhouMahjong entry and click "Allow"
+echo.
+echo   The source code is fully open at:
+echo   https://github.com/LukeM73/fuzhou-mahjong
+echo  ============================================================
+echo.
 echo  To share with friends:
 echo    1. Zip the entire  dist\FuzhouMahjong\  folder
-echo    2. Send them the zip — they just extract and double-click FuzhouMahjong.exe
+echo    2. Send them the zip -- they just extract and double-click FuzhouMahjong.exe
 echo    3. No Python or terminal required on their end!
 echo.
 echo  To host online across the internet, one player runs the app,

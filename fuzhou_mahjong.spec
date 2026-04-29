@@ -92,12 +92,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,                       # compress if UPX is installed (optional)
+    upx=False,                      # KEEP False — UPX triggers antivirus false-positives
     console=False,                  # no black terminal window on launch
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    manifest="app.manifest",        # Windows app manifest (helps AV trust the exe)
+    version="file_version_info.txt",# Windows VERSIONINFO resource
     # icon="fuzhou_mahjong/assets/icon.ico",  # uncomment if you add an icon
 )
 
@@ -109,7 +111,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,                      # KEEP False — UPX triggers antivirus false-positives
     upx_exclude=[],
     name="FuzhouMahjong",           # → dist/FuzhouMahjong/
 )
